@@ -51,6 +51,8 @@
         <button data-h="72" class="active">3 j</button>
         <button data-h="168">7 j</button>
         <button data-h="720">30 j</button>
+        <button data-h="2160">90 j</button>
+        <button data-h="8760">1 an</button>
         <span>·</span>
         <input type="date" id="date-from"> → <input type="date" id="date-to">
         <button id="apply-range">OK</button>
@@ -60,8 +62,8 @@
       </span>
     </h2>
     <div id="chart-wrap"><canvas id="levels-chart"></canvas></div>
-    <div class="hint">Molette / pincer : zoom · glisser : déplacer · Maj+glisser : zoom sur sélection · clic : vent à cette date · clic légende : masquer une série</div>
-    <div id="date-wind"></div>
+    <div class="hint">Molette / pincer : zoom · glisser : déplacer (au-delà des bords : chargement auto) · Maj+glisser : zoom sur sélection · survol/clic : météo à cette date · clic légende : masquer une série</div>
+    <div id="met-widget"></div>
     <div id="overpass-strip"></div>
     <div class="op-legend" id="op-legend"></div>
   </section>

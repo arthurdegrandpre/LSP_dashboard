@@ -71,9 +71,25 @@ main{display:grid;grid-template-columns:repeat(12,1fr);gap:16px;padding:16px 22p
 #modal .close{position:absolute;top:8px;right:12px;cursor:pointer;color:var(--muted);font-size:1.3rem}
 #modal .links{display:flex;gap:10px;margin-top:10px;flex-wrap:wrap}
 #modal a{color:var(--accent);font-size:.8rem;text-decoration:none}
-/* panneau vent à la date cliquée */
-#date-wind{display:none;margin-top:10px;background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:10px 14px;font-size:.8rem}
-#date-wind.open{display:block}
+/* widget météo à la date survolée/cliquée */
+#met-widget{display:none;margin-top:10px;background:var(--panel2);border:1px solid var(--border);border-radius:10px;padding:12px 16px}
+#met-widget.open{display:block}
+#met-widget .mw-head{display:flex;justify-content:space-between;align-items:center;font-size:.8rem;color:var(--muted);margin-bottom:10px}
+#met-widget .mw-head b{color:var(--text);font-size:.9rem}
+#met-widget .mw-pin{font-size:.68rem;padding:2px 8px;border-radius:12px;border:1px solid var(--border);cursor:default}
+#met-widget .mw-pin.pinned{color:var(--accent);border-color:var(--accent)}
+.mw-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px}
+.mw-card{display:flex;align-items:center;gap:14px;background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:12px 14px}
+.mw-card .big-compass{width:72px;height:72px;flex:none}
+.mw-card .mw-place{font-size:.8rem;font-weight:600;margin-bottom:2px}
+.mw-card .mw-temp{font-size:1.5rem;font-weight:700}
+.mw-card .mw-wind{font-size:.95rem;color:var(--accent);font-weight:600}
+.mw-card .mw-sub{font-size:.7rem;color:var(--muted)}
+/* qualité de l'eau */
+.wq-marker{width:13px;height:13px;transform:rotate(45deg);background:#4dd0e1;border:2px solid #0d1420;box-shadow:0 0 6px #4dd0e1;cursor:pointer}
+.wq-popup table{border-collapse:collapse;font-size:.75rem;margin-top:4px}
+.wq-popup td{padding:1px 8px 1px 0;color:var(--text)}
+.wq-popup td:first-child{color:var(--muted)}
 footer{padding:14px 22px 26px;color:var(--muted);font-size:.72rem;max-width:1500px;margin:0 auto;line-height:1.6}
 footer a{color:var(--accent);text-decoration:none}
 .err{color:var(--danger);font-size:.78rem}

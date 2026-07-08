@@ -25,32 +25,48 @@ const fetchJSON = async url => { const r = await fetch(url); if(!r.ok) throw new
 const iso = d => new Date(d).toISOString().slice(0,19)+"Z";
 const dayStr = d => new Date(d).toISOString().slice(0,10);
 
-// IWLS : tranches de 48 h, sous-échantillonné
+const subsample = (pts, n=1200) => {
+  const step = Math.max(1, Math.round(pts.length/n));
+  return pts.filter((_,i)=>i%step===0);
+};
+
+// IWLS — résolution adaptative : minute (fenêtre courte) ou horaire (fenêtre longue)
 async function iwlsSeries(id, fromMs, toMs){
+  const spanDays = (toMs-fromMs)/864e5;
+  const hourly = spanDays > 21;
+  const chunk = (hourly ? 30*24 : 48)*36e5;
+  const res = hourly ? "&resolution=SIXTY_MINUTES" : "";
   const reqs = [];
-  for (let t = fromMs; t < toMs; t += 48*36e5){
-    reqs.push(fetchJSON(`https://api-iwls.dfo-mpo.gc.ca/api/v1/stations/${id}/data?time-series-code=wlo&from=${iso(t)}&to=${iso(Math.min(t+48*36e5, toMs))}`)
+  for (let t = fromMs; t < toMs; t += chunk){
+    reqs.push(fetchJSON(`https://api-iwls.dfo-mpo.gc.ca/api/v1/stations/${id}/data?time-series-code=wlo&from=${iso(t)}&to=${iso(Math.min(t+chunk, toMs))}${res}`)
       .catch(()=>[]));
   }
   const out = (await Promise.all(reqs)).flat();
-  const step = Math.max(1, Math.round(out.length/600));
-  return out.filter((_,i)=>i%step===0).map(p=>({x:new Date(p.eventDate).getTime(), y:p.value}));
+  return subsample(out.map(p=>({x:new Date(p.eventDate).getTime(), y:p.value})));
 }
 // ECCC temps réel (~1 mois d'archive)
 async function geometRealtime(id, fromMs, toMs){
   const d = await fetchJSON(`https://api.weather.gc.ca/collections/hydrometric-realtime/items?f=json&STATION_NUMBER=${id}&datetime=${iso(fromMs)}/${iso(toMs)}&limit=8000&properties=DATETIME,LEVEL&sortby=DATETIME`);
-  const pts = d.features.map(f=>({x:new Date(f.properties.DATETIME).getTime(), y:f.properties.LEVEL})).filter(p=>p.y!=null);
-  const step = Math.max(1, Math.round(pts.length/600));
-  return pts.filter((_,i)=>i%step===0);
+  return subsample(d.features.map(f=>({x:new Date(f.properties.DATETIME).getTime(), y:f.properties.LEVEL})).filter(p=>p.y!=null));
 }
 // ECCC moyennes journalières historiques (HYDAT)
 async function geometDaily(id, fromMs, toMs){
   const d = await fetchJSON(`https://api.weather.gc.ca/collections/hydrometric-daily-mean/items?f=json&STATION_NUMBER=${id}&datetime=${iso(fromMs)}/${iso(toMs)}&limit=1000&properties=DATE,LEVEL&sortby=DATE`);
   return d.features.map(f=>({x:new Date(f.properties.DATE+"T12:00:00Z").getTime(), y:f.properties.LEVEL})).filter(p=>p.y!=null);
 }
+// Lanoraie : le temps réel ne couvre qu'~1 mois — combiner archives journalières + temps réel
+async function geometCombined(id, fromMs, toMs){
+  const cut = Date.now() - 29*864e5;
+  if (fromMs >= cut) return geometRealtime(id, fromMs, toMs).then(p=>p.length?p:geometDaily(id,fromMs,toMs));
+  const [daily, rt] = await Promise.all([
+    geometDaily(id, fromMs, Math.min(toMs, cut)),
+    toMs > cut ? geometRealtime(id, cut, toMs) : Promise.resolve([])
+  ]);
+  return daily.concat(rt);
+}
 const seriesFor = (st, fromMs, toMs, historical=false) =>
   st.type==="iwls" ? iwlsSeries(st.id, fromMs, toMs)
-  : historical ? geometDaily(st.id, fromMs, toMs) : geometRealtime(st.id, fromMs, toMs).then(p=>p.length?p:geometDaily(st.id,fromMs,toMs));
+  : historical ? geometDaily(st.id, fromMs, toMs) : geometCombined(st.id, fromMs, toMs);
 
 /* ============================================================
    MODULE : Niveaux d'eau (KPI + graphique interactif)
@@ -78,9 +94,14 @@ const Levels = {
       this.refresh(); Overpass.refresh();
     };
     document.getElementById("toggle-history").onchange = ()=>this.render();
-    document.getElementById("reset-zoom").onclick = ()=>this.chart.resetZoom();
+    document.getElementById("reset-zoom").onclick = ()=>{ this.chart.resetZoom(); };
 
-    const syncStrip = ({chart})=>Overpass.reposition(chart.scales.x.min, chart.scales.x.max);
+    // défilement latéral : si la vue dépasse les données chargées, on étend la fenêtre
+    const onViewChange = ({chart})=>{
+      const {min,max} = chart.scales.x;
+      Overpass.reposition(min,max);
+      if (min < this.from || max > this.to) this.extend(min,max);
+    };
     this.chart = new Chart(document.getElementById("levels-chart"), {
       type:"line", data:{datasets:[]},
       options:{
@@ -88,18 +109,21 @@ const Levels = {
         interaction:{mode:"nearest", axis:"x", intersect:false},
         onClick: (e)=>{
           const x = this.chart.scales.x.getValueForPixel(e.x);
-          if (x) DateWind.show(new Date(x));
+          if (x) MetWidget.show(x, true);
+        },
+        onHover: (e)=>{
+          const x = this.chart.scales.x.getValueForPixel(e.x);
+          if (x) MetWidget.show(x, false);
         },
         plugins:{
           legend:{labels:{color:"#8fa1bb", usePointStyle:true, pointStyle:"line",
             filter: item => !item.text.startsWith("_")}},
           tooltip:{callbacks:{label:c=>`${c.dataset.label.replace(/^_/,"")}: ${c.parsed.y?.toFixed(2)} m`}},
           zoom:{
-            pan:{enabled:true, mode:"x", onPanComplete:syncStrip},
+            pan:{enabled:true, mode:"x", onPanComplete:onViewChange},
             zoom:{wheel:{enabled:true}, pinch:{enabled:true},
               drag:{enabled:true, modifierKey:"shift", backgroundColor:"rgba(63,182,255,.15)"},
-              mode:"x", onZoomComplete:syncStrip},
-            limits:{x:{min:"original", max:"original"}}
+              mode:"x", onZoomComplete:onViewChange}
           }
         },
         scales:{
@@ -113,13 +137,25 @@ const Levels = {
       }
     });
   },
-  async refresh(){
+  // extension paresseuse quand on défile au-delà des données chargées
+  extend(min, max){
+    clearTimeout(this._extT);
+    this._extT = setTimeout(()=>{
+      const span = this.to - this.from;
+      if (min < this.from) this.from = Math.max(min - span*0.5, Date.now() - 5*365.25*864e5);
+      if (max > this.to)   this.to   = Math.min(max + span*0.5, Date.now());
+      const keep = {min, max};
+      this.refresh(keep); Overpass.refresh(); MetWidget.load();
+    }, 350);
+  },
+  async refresh(keepView){
     const kpis = document.getElementById("kpis");
     const stations = CONFIG.waterStations;
     // séries courantes
     const cur = await Promise.allSettled(stations.map(st=>seriesFor(st, this.from, this.to)));
     // séries des années précédentes (décalées vers la fenêtre courante)
-    const years = [...Array(CONFIG.historyYears)].map((_,i)=>i+1);
+    const spanDays = (this.to-this.from)/864e5;
+    const years = spanDays > CONFIG.histMaxDays ? [] : [...Array(CONFIG.historyYears)].map((_,i)=>i+1);
     const hist = await Promise.allSettled(stations.flatMap(st=>years.map(async k=>{
       const shift = k*365.25*864e5;
       const pts = await seriesFor(st, this.from-shift, this.to-shift, true);
@@ -153,9 +189,9 @@ const Levels = {
       const {st,k,pts} = res.value;
       (this.histData[st.key] ??= {})[k] = pts;
     });
-    this.render();
+    this.render(keepView);
   },
-  render(){
+  render(keepView){
     const showHist = document.getElementById("toggle-history").checked;
     const ds = [];
     for (const st of CONFIG.waterStations){
@@ -186,41 +222,91 @@ const Levels = {
       }
     }
     this.chart.data.datasets = ds;
-    this.chart.options.scales.x.min = this.from;
-    this.chart.options.scales.x.max = this.to;
+    this.chart.options.scales.x.min = keepView?.min ?? this.from;
+    this.chart.options.scales.x.max = keepView?.max ?? this.to;
     this.chart.update();
-    this.chart.resetZoom?.();
-    Overpass.reposition(this.from, this.to);
+    Overpass.reposition(this.chart.options.scales.x.min, this.chart.options.scales.x.max);
   }
 };
 App.register(Levels);
 
 /* ============================================================
-   MODULE : Vent à une date précise (clic sur le graphique)
-   Archives climatiques horaires ECCC
+   MODULE : Widget météo (survol/clic sur le graphique)
+   Archives horaires ECCC préchargées pour la fenêtre — survol instantané.
+   Clic = épingler la date; nouveau clic = désépingler.
    ============================================================ */
-const DateWind = {
-  async show(date){
-    const panel = document.getElementById("date-wind");
-    panel.classList.add("open");
-    const dstr = date.toLocaleString("fr-CA",{dateStyle:"medium",timeStyle:"short"});
-    panel.innerHTML = `Vent le <b>${dstr}</b> : chargement…`;
-    const rows = await Promise.all(CONFIG.climateStations.map(async cs=>{
-      try{
-        const local = new Date(date); local.setMinutes(0,0,0);
-        const ld = local.toISOString().slice(0,10)+" "+String(local.getHours()).padStart(2,"0")+":00:00";
-        const d = await fetchJSON(`https://api.weather.gc.ca/collections/climate-hourly/items?f=json&CLIMATE_IDENTIFIER=${cs.id}&LOCAL_DATE=${encodeURIComponent(ld)}&limit=1&properties=WIND_SPEED,WIND_DIRECTION,TEMP`);
-        const p = d.features?.[0]?.properties;
-        if(!p) return `${cs.name} : aucune donnée archivée`;
-        return `<b>${cs.name}</b> : ${p.WIND_SPEED!=null?p.WIND_SPEED+" km/h":"–"}` +
-          (p.WIND_DIRECTION!=null?` · ${p.WIND_DIRECTION*10}°`:"") +
-          (p.TEMP!=null?` · ${p.TEMP} °C`:"");
-      }catch(e){ return `${cs.name} : erreur (${e.message})`; }
+const MetWidget = {
+  series:{}, pinned:false, _raf:null,
+  async init(){ /* chargé après Levels via load() */ },
+  async refresh(){ await this.load(); },
+  async load(){
+    const from = Levels.from, to = Levels.to;
+    await Promise.allSettled(CONFIG.climateStations.map(async cs=>{
+      const pts = [];
+      const chunk = 60*864e5; // 60 jours par requête
+      const reqs = [];
+      for (let t = from; t < to; t += chunk){
+        reqs.push(fetchJSON(`https://api.weather.gc.ca/collections/climate-hourly/items?f=json&CLIMATE_IDENTIFIER=${cs.id}&datetime=${iso(t)}/${iso(Math.min(t+chunk,to))}&limit=2000&properties=LOCAL_DATE,WIND_SPEED,WIND_DIRECTION,TEMP&sortby=LOCAL_DATE`)
+          .catch(()=>({features:[]})));
+      }
+      for (const d of await Promise.all(reqs))
+        for (const f of d.features||[]){
+          const p = f.properties;
+          pts.push({x:new Date(p.LOCAL_DATE.replace(" ","T")).getTime(),
+            speed:p.WIND_SPEED, dir:p.WIND_DIRECTION!=null?p.WIND_DIRECTION*10:null, temp:p.TEMP});
+        }
+      this.series[cs.id] = pts;
     }));
-    panel.innerHTML = `Vent le <b>${dstr}</b> (archives horaires ECCC) — ${rows.join(" &nbsp;|&nbsp; ")}
-      <span style="float:right;cursor:pointer;color:var(--muted)" onclick="this.parentElement.classList.remove('open')">✕</span>`;
+  },
+  nearest(pts, x){
+    if (!pts?.length) return null;
+    let lo=0, hi=pts.length-1;
+    while (hi-lo>1){ const m=(lo+hi)>>1; pts[m].x<x?lo=m:hi=m; }
+    const best = Math.abs(pts[lo].x-x)<Math.abs(pts[hi].x-x)?pts[lo]:pts[hi];
+    return Math.abs(best.x-x) <= 2*36e5 ? best : null; // ≤ 2 h d'écart
+  },
+  show(x, click){
+    if (this.pinned && !click) return;
+    if (click) this.pinned = !this.pinned && true;
+    if (click && !this.pinned){ /* désépinglé : continue à suivre */ }
+    cancelAnimationFrame(this._raf);
+    this._raf = requestAnimationFrame(()=>this.render(x));
+  },
+  render(x){
+    const panel = document.getElementById("met-widget");
+    panel.classList.add("open");
+    const dstr = new Date(x).toLocaleString("fr-CA",{dateStyle:"medium",timeStyle:"short"});
+    const cards = CONFIG.climateStations.map(cs=>{
+      const o = this.nearest(this.series[cs.id], x);
+      if (!o) return `<div class="mw-card"><div><div class="mw-place">${cs.name}</div><div class="mw-sub">Pas de donnée archivée à ±2 h</div></div></div>`;
+      const dir = o.dir ?? 0;
+      const tcol = o.temp==null?"var(--muted)":o.temp<=0?"#7ecbff":o.temp<15?"#8fd8c5":o.temp<25?"#ffd479":"#ff9d6b";
+      return `
+        <div class="mw-card">
+          <svg class="big-compass" viewBox="0 0 80 80">
+            <circle cx="40" cy="40" r="36" fill="var(--panel2)" stroke="var(--border)" stroke-width="2"/>
+            <text x="40" y="13" fill="var(--muted)" font-size="9" text-anchor="middle">N</text>
+            <text x="40" y="74" fill="var(--muted)" font-size="9" text-anchor="middle">S</text>
+            ${o.dir!=null?`<g transform="rotate(${dir+180},40,40)">
+              <path d="M40 12 L48 46 L40 38 L32 46 Z" fill="var(--accent)"/>
+            </g>`:`<text x="40" y="44" fill="var(--muted)" font-size="9" text-anchor="middle">dir ?</text>`}
+            <circle cx="40" cy="40" r="4" fill="var(--panel)" stroke="var(--accent)"/>
+          </svg>
+          <div>
+            <div class="mw-place">${cs.name}</div>
+            <div class="mw-temp" style="color:${tcol}">${o.temp!=null?o.temp.toFixed(1)+" °C":"–"}</div>
+            <div class="mw-wind">${o.speed!=null?o.speed+" km/h":"vent –"}</div>
+            <div class="mw-sub">${o.dir!=null?Math.round(dir)+"° · ":""}${new Date(o.x).toLocaleString("fr-CA",{month:"short",day:"numeric",hour:"2-digit",minute:"2-digit"})}</div>
+          </div>
+        </div>`;
+    }).join("");
+    panel.innerHTML = `
+      <div class="mw-head"><span>Météo le <b>${dstr}</b> — archives horaires ECCC</span>
+        <span class="mw-pin ${this.pinned?"pinned":""}">${this.pinned?"📌 épinglé (cliquer le graphique pour libérer)":"suit le curseur — cliquer pour épingler"}</span></div>
+      <div class="mw-grid">${cards}</div>`;
   }
 };
+App.register(MetWidget);
 
 /* ============================================================
    MODULE : Passages satellites (STAC Earth Search + Planet)
@@ -466,6 +552,84 @@ App.register({
 });
 
 /* ============================================================
+   MODULE : Qualité de l'eau — Réseau-Rivières (Données Québec, CKAN)
+   Découvre les ressources du jeu de données, charge stations + dernières
+   mesures dans la bbox, et les affiche sur la carte (losanges cyan).
+   Échec réseau/CORS → statut « indisponible » sans casser l'app.
+   ============================================================ */
+const WaterQuality = {
+  stations: [], markers: [], status: "chargement",
+  async init(){
+    // attendre que la carte existe
+    const wait = () => new Promise(r=>{ const t=setInterval(()=>{ if(window._map){clearInterval(t);r();} },200); });
+    await wait();
+    this.load().catch(e=>{ this.status = "indisponible ("+e.message+")"; this.chip(); });
+  },
+  chip(){
+    let el = document.getElementById("wq-chip");
+    if (!el){
+      el = document.createElement("label"); el.id = "wq-chip";
+      document.getElementById("layer-toggles").appendChild(el);
+    }
+    if (this.stations.length){
+      el.innerHTML = `<input type="checkbox" checked> Qualité de l'eau (${this.stations.length} stations)`;
+      el.querySelector("input").onchange = e =>
+        this.markers.forEach(m=>m.getElement().style.display = e.target.checked?"":"none");
+    } else {
+      el.textContent = `Qualité de l'eau : ${this.status}`;
+    }
+  },
+  async load(){
+    const wq = CONFIG.waterQuality;
+    let geojson = null;
+    if (wq.geojsonUrl){
+      geojson = await fetchJSON(wq.geojsonUrl);
+    } else {
+      // découverte via l'API CKAN
+      const pkg = await fetchJSON(`${wq.ckanBase}/package_show?id=${wq.datasetId}`);
+      const resources = pkg.result?.resources || [];
+      const geo = resources.find(r=>/geojson/i.test(r.format||"") && !/zip/i.test(r.url||""))
+               || resources.find(r=>/json/i.test(r.format||""));
+      if (geo) geojson = await fetchJSON(geo.url);
+      else {
+        // repli : ressource datastore (CSV indexé) — champs lat/long découverts dynamiquement
+        const dsRes = resources.find(r=>r.datastore_active);
+        if (!dsRes) throw new Error("aucune ressource exploitable");
+        const meta = await fetchJSON(`${wq.ckanBase}/datastore_search?resource_id=${dsRes.id}&limit=0`);
+        const fields = meta.result.fields.map(f=>f.id);
+        const latF = fields.find(f=>/lat/i.test(f)), lonF = fields.find(f=>/lon|lng/i.test(f));
+        if (!latF||!lonF) throw new Error("champs de coordonnées introuvables");
+        const rows = (await fetchJSON(`${wq.ckanBase}/datastore_search?resource_id=${dsRes.id}&limit=5000`)).result.records;
+        geojson = { features: rows.map(r=>({ geometry:{coordinates:[+r[lonF], +r[latF]]}, properties:r })) };
+      }
+    }
+    const [w,s,e,n] = wq.bbox;
+    const feats = (geojson.features||[]).filter(f=>{
+      const c = f.geometry?.coordinates; return c && c[0]>=w && c[0]<=e && c[1]>=s && c[1]<=n;
+    }).slice(0, wq.maxStations);
+    if (!feats.length){ this.status = "aucune station dans la zone"; this.chip(); return; }
+    this.stations = feats;
+    for (const f of feats){
+      const p = f.properties || {};
+      const name = p.NOM_STATION || p.nom_station || p.Station || p.NO_STATION || p.no_station || "Station";
+      const rowsHtml = Object.entries(p)
+        .filter(([k,v])=>v!=null && v!=="" && !/geom|coord|^lat|^lon|objectid/i.test(k))
+        .slice(0,14)
+        .map(([k,v])=>`<tr><td>${k}</td><td>${v}</td></tr>`).join("");
+      const el = document.createElement("div"); el.className = "wq-marker";
+      const popup = new maplibregl.Popup({offset:12, maxWidth:"340px"})
+        .setHTML(`<div class="wq-popup"><b>💧 ${name}</b><br>
+          <span style="color:var(--muted);font-size:.7rem">Réseau-Rivières (MELCCFP) — dernières valeurs publiées</span>
+          <table>${rowsHtml}</table></div>`);
+      this.markers.push(new maplibregl.Marker({element:el})
+        .setLngLat(f.geometry.coordinates.slice(0,2)).setPopup(popup).addTo(window._map));
+    }
+    this.status = "ok"; this.chip();
+  }
+};
+App.register(WaterQuality);
+
+/* ============================================================
    MODULE : Export des données
    ============================================================ */
 const Exporter = {
@@ -503,3 +667,4 @@ const Exporter = {
 };
 
 App.init();
+/* fin */

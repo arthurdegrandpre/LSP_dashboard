@@ -5,7 +5,8 @@
 const CONFIG = {
   refreshMinutes: 10,
   historyYears: 3,           // nombre d'années précédentes superposées
-  maxCustomDays: 31,         // limite d'une période personnalisée
+  histMaxDays: 92,           // au-delà, les superpositions d'années sont désactivées (volume)
+  maxCustomDays: 366,        // limite d'une période personnalisée (1 an)
   map: { center: [-72.83, 46.19], zoom: 9.2 },
   lakeBbox: [-73.0, 46.05, -72.65, 46.32],
 
@@ -53,5 +54,16 @@ const CONFIG = {
   ],
   get planetApiKey(){ return localStorage.getItem("planetApiKey") || ""; }, // via bouton « Connecter Planet »
 
-  stacApi: "https://earth-search.aws.element84.com/v1/search"
+  stacApi: "https://earth-search.aws.element84.com/v1/search",
+
+  // Qualité de l'eau — Réseau-Rivières (MELCCFP) via l'API CKAN de Données Québec.
+  // Le module découvre automatiquement les ressources « datastore » du jeu de données
+  // et affiche les stations situées dans waterQuality.bbox. Si l'API n'est pas
+  // joignable (CORS/réseau), la couche est simplement marquée indisponible.
+  waterQuality: {
+    ckanBase: "https://www.donneesquebec.ca/recherche/api/3/action",
+    datasetId: "suivi-physicochimique-des-rivieres-et-du-fleuve",
+    bbox: [-73.3, 45.9, -72.4, 46.45],   // zone élargie autour du lac
+    maxStations: 40
+  }
 };
