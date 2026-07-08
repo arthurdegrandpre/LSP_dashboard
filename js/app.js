@@ -582,9 +582,17 @@ const WaterQuality = {
   async load(){
     const wq = CONFIG.waterQuality;
     let geojson = null;
-    if (wq.geojsonUrl){
+    if (wq.arcgisLayer){
+      // Service ArcGIS REST du MELCCFP — requête GeoJSON filtrée par bbox (repli CKAN si échec)
+      const [w,s,e,n] = wq.bbox;
+      geojson = await fetchJSON(`${wq.arcgisLayer}/query?f=geojson&where=1%3D1&outFields=*` +
+        `&geometry=${w},${s},${e},${n}&inSR=4326&outSR=4326&resultRecordCount=${wq.maxStations}`)
+        .catch(()=>null);
+    }
+    if (!geojson && wq.geojsonUrl){
       geojson = await fetchJSON(wq.geojsonUrl);
-    } else {
+    }
+    if (!geojson){
       // découverte via l'API CKAN
       const pkg = await fetchJSON(`${wq.ckanBase}/package_show?id=${wq.datasetId}`);
       const resources = pkg.result?.resources || [];
@@ -611,7 +619,8 @@ const WaterQuality = {
     this.stations = feats;
     for (const f of feats){
       const p = f.properties || {};
-      const name = p.NOM_STATION || p.nom_station || p.Station || p.NO_STATION || p.no_station || "Station";
+      const nameKey = Object.keys(p).find(k=>/nom|descri|station/i.test(k) && typeof p[k]==="string" && p[k].length>3);
+      const name = p.NOM_STATION || p.NOM_STA || p.DES_STA || (nameKey?p[nameKey]:null) || "Station";
       const rowsHtml = Object.entries(p)
         .filter(([k,v])=>v!=null && v!=="" && !/geom|coord|^lat|^lon|objectid/i.test(k))
         .slice(0,14)

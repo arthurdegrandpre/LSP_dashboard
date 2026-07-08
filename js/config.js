@@ -61,6 +61,9 @@ const CONFIG = {
   // et affiche les stations situées dans waterQuality.bbox. Si l'API n'est pas
   // joignable (CORS/réseau), la couche est simplement marquée indisponible.
   waterQuality: {
+    // Service ArcGIS REST du MELCCFP (IQBP) — CORS ouvert, filtrage spatial côté serveur
+    arcgisLayer: "https://geo.environnement.gouv.qc.ca/donnees/rest/services/Eau/IQBP/MapServer/0",
+    // repli : découverte via l'API CKAN de Données Québec
     ckanBase: "https://www.donneesquebec.ca/recherche/api/3/action",
     datasetId: "suivi-physicochimique-des-rivieres-et-du-fleuve",
     bbox: [-73.3, 45.9, -72.4, 46.45],   // zone élargie autour du lac
