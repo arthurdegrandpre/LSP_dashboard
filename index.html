@@ -37,6 +37,7 @@
     <h2>Carte interactive</h2>
     <div class="layer-toggles" id="layer-toggles"></div>
     <div id="map"></div>
+    <div class="aoi-tools" id="aoi-tools"></div>
   </section>
 
   <section class="card" id="wind-card">
@@ -45,7 +46,7 @@
   </section>
 
   <section class="card" id="chart-card">
-    <h2>Niveaux d'eau — séries temporelles
+    <h2>Séries temporelles — niveaux d'eau &amp; vent
       <span class="toolbar">
         <button data-h="24">24 h</button>
         <button data-h="72" class="active">3 j</button>
@@ -57,13 +58,33 @@
         <input type="date" id="date-from"> → <input type="date" id="date-to">
         <button id="apply-range">OK</button>
         <span>·</span>
-        <label><input type="checkbox" id="toggle-history" checked> Années préc. + moyenne</label>
         <button id="reset-zoom">Réinit. zoom</button>
       </span>
     </h2>
-    <div id="chart-wrap"><canvas id="levels-chart"></canvas></div>
-    <div class="hint">Molette / pincer : zoom · glisser : déplacer (au-delà des bords : chargement auto) · Maj+glisser : zoom sur sélection · survol/clic : météo à cette date · clic légende : masquer une série</div>
-    <div id="met-widget"></div>
+
+    <div class="chart-layout">
+      <div class="chart-main">
+        <div id="chart-wrap"><canvas id="levels-chart"></canvas></div>
+        <div class="hint">Molette / pincer : zoom · glisser : déplacer (au-delà des bords : chargement auto) · Maj+glisser : zoom sur sélection · survol/clic : vent et température à cette date</div>
+        <div id="met-widget"></div>
+      </div>
+
+      <aside id="series-panel">
+        <div class="sp-head">
+          <span class="sp-title">Séries <b id="sp-count">—</b></span>
+          <button id="sp-collapse" title="Réduire le panneau des séries">›</button>
+        </div>
+        <div class="sp-body">
+          <input id="sp-search" type="search" placeholder="Filtrer les séries…">
+          <div class="sp-quick" id="sp-quick"></div>
+          <div id="sp-groups"></div>
+          <div class="sp-note">Seules les séries cochées sont téléchargées.</div>
+        </div>
+      </aside>
+    </div>
+
+    <h3 class="sub-head">Passages satellites</h3>
+    <div class="sat-filters" id="sat-filters"></div>
     <div id="overpass-strip"></div>
     <div class="op-legend" id="op-legend"></div>
   </section>
@@ -77,12 +98,18 @@
 <footer>
   Sources : <a href="https://api-iwls.dfo-mpo.gc.ca" target="_blank">IWLS / SINECO (MPO)</a> ·
   <a href="https://api.weather.gc.ca" target="_blank">MSC GeoMet (ECCC)</a> ·
+  <a href="https://open-meteo.com" target="_blank">Open-Meteo</a> ·
   <a href="https://earth-search.aws.element84.com/v1" target="_blank">Earth Search STAC (Element 84)</a> ·
   Fond de carte © <a href="https://www.openstreetmap.org/copyright" target="_blank">OpenStreetMap</a>.
   Données indicatives seulement. Actualisation aux <span id="cfg-interval"></span> min.
 </footer>
 
 <script src="js/config.js"></script>
+<script src="js/core.js"></script>
+<script src="js/aoi.js"></script>
+<script src="js/wind.js"></script>
+<script src="js/satellites.js"></script>
+<script src="js/layers.js"></script>
 <script src="js/app.js"></script>
 </body>
 </html>

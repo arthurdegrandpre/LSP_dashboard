@@ -28,10 +28,21 @@ const CONFIG = {
     { icao:"CYRQ", name:"Trois-Rivières (aéroport)", lat:46.3516, lon:-72.6805 }
   ],
 
-  // Archives climatiques horaires ECCC (vent à une date donnée)
-  climateStations: [
-    { id:"7018561", name:"Trois-Rivières A" }
-    // Ajoutez d'autres CLIMATE_IDENTIFIER ici (voir collections/climate-stations)
+  /* ------------------------------------------------------------
+     SÉRIES TEMPORELLES DE VENT — tracées sur le graphique (axe km/h),
+     incluses dans l'export et utilisées par le widget météo.
+
+       climateId : archives horaires ECCC (observations réelles).
+                   Repli automatique sur Open-Meteo si l'archive est vide.
+       (sans climateId) : Open-Meteo — réanalyse + prévision, pour n'importe
+                   quel point du lac, sans clé API.
+       met:true  : série toujours chargée même si masquée dans le graphique,
+                   car elle alimente le widget météo au survol.
+     ------------------------------------------------------------ */
+  windSeries: [
+    { key:"tr",    name:"Trois-Rivières A",       climateId:"7018561", lat:46.3516, lon:-72.6805, color:"#7ecbff", met:true },
+    { key:"lsp",   name:"Centre du lac (modèle)", lat:46.1900, lon:-72.8500, color:"#b39ddb" },
+    { key:"sorel", name:"Sorel (modèle)",         lat:46.0472, lon:-73.1157, color:"#ff9d6b" }
   ],
 
   // Couches WMS GeoMet (STYLES obligatoire en WMS 1.3.0)
@@ -55,6 +66,27 @@ const CONFIG = {
   get planetApiKey(){ return localStorage.getItem("planetApiKey") || ""; }, // via bouton « Connecter Planet »
 
   stacApi: "https://earth-search.aws.element84.com/v1/search",
+
+  /* ------------------------------------------------------------
+     FILTRAGE DES SCÈNES SATELLITES (valeurs de départ ; les curseurs
+     de l'interface les remplacent et sont mémorisés dans le navigateur)
+
+       maxCloud     : couverture nuageuse maximale acceptée (%)
+       minOverlap   : recouvrement minimal de la zone d'intérêt (%) —
+                      c'est ce filtre qui élimine les scènes qui ne touchent
+                      la zone que par un coin (fréquent avec Planet)
+       unknownCloud : conserver les scènes sans information de nuages
+       planetPages  : nombre de pages (250 scènes) récupérées chez Planet
+       aoiSamples   : nombre approximatif de points d'échantillonnage
+                      servant à mesurer le recouvrement
+     ------------------------------------------------------------ */
+  scenes: {
+    maxCloud: 100,
+    minOverlap: 0,
+    unknownCloud: true,
+    planetPages: 3,
+    aoiSamples: 3200
+  },
 
   // Qualité de l'eau — Réseau-Rivières (MELCCFP) via l'API CKAN de Données Québec.
   // Le module découvre automatiquement les ressources « datastore » du jeu de données
