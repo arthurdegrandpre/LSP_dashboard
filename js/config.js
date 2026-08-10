@@ -13,11 +13,15 @@ const CONFIG = {
   // Stations de niveau d'eau.
   // "iwls": SINECO/MPO (1 min, zéro des cartes) · "geomet": ECCC (5 min, géodésique)
   // axis:"y2" => second axe (échelles différentes)
+  // forecastCodes : séries de prévision IWLS essayées dans l'ordre, la première
+  //   qui renvoie des données est retenue et affichée (SPINE est le système de
+  //   prévision du niveau du Saint-Laurent ; wlp est la prédiction astronomique).
+  //   Liste vide = aucune prévision de niveau pour cette station.
   waterStations: [
-    { key:"sorel",    name:"Sorel",                          type:"iwls",   id:"5cebf1e03d0f4a073c4bbe32", lat:46.0472, lon:-73.1157, color:"#3fb6ff", datum:"Zéro des cartes", axis:"y"  },
-    { key:"lsp",      name:"Lac Saint-Pierre (Louiseville)", type:"iwls",   id:"5cebf1e03d0f4a073c4bbe49", lat:46.1948, lon:-72.8955, color:"#37d3a2", datum:"Zéro des cartes", axis:"y"  },
-    { key:"lanoraie", name:"Lanoraie",                       type:"geomet", id:"02OB011",                  lat:45.9594, lon:-73.2146, color:"#ffb454", datum:"Niveau géodésique", axis:"y2" },
-    { key:"tr",       name:"Trois-Rivières",                 type:"iwls",   id:"5cebf1df3d0f4a073c4bbbac", lat:46.3405, lon:-72.5392, color:"#c792ea", datum:"Zéro des cartes", axis:"y"  }
+    { key:"sorel",    name:"Sorel",                          type:"iwls",   id:"5cebf1e03d0f4a073c4bbe32", lat:46.0472, lon:-73.1157, color:"#3fb6ff", datum:"Zéro des cartes", axis:"y",  forecastCodes:["wlf-spine","wlf","wlp"] },
+    { key:"lsp",      name:"Lac Saint-Pierre (Louiseville)", type:"iwls",   id:"5cebf1e03d0f4a073c4bbe49", lat:46.1948, lon:-72.8955, color:"#37d3a2", datum:"Zéro des cartes", axis:"y",  forecastCodes:["wlf-spine","wlf","wlp"] },
+    { key:"lanoraie", name:"Lanoraie",                       type:"geomet", id:"02OB011",                  lat:45.9594, lon:-73.2146, color:"#ffb454", datum:"Niveau géodésique", axis:"y2", forecastCodes:[] },
+    { key:"tr",       name:"Trois-Rivières",                 type:"iwls",   id:"5cebf1df3d0f4a073c4bbbac", lat:46.3405, lon:-72.5392, color:"#c792ea", datum:"Zéro des cartes", axis:"y",  forecastCodes:["wlf-spine","wlf","wlp"] }
   ],
 
   // Stations météo — observations SWOB (temps réel) par code ICAO, repli Open-Meteo
@@ -39,11 +43,40 @@ const CONFIG = {
        met:true  : série toujours chargée même si masquée dans le graphique,
                    car elle alimente le widget météo au survol.
      ------------------------------------------------------------ */
+  //   fc:true : les prévisions de vent de ce point sont actives par défaut
   windSeries: [
     { key:"tr",    name:"Trois-Rivières A",       climateId:"7018561", lat:46.3516, lon:-72.6805, color:"#7ecbff", met:true },
-    { key:"lsp",   name:"Centre du lac (modèle)", lat:46.1900, lon:-72.8500, color:"#b39ddb" },
+    { key:"lsp",   name:"Centre du lac (modèle)", lat:46.1900, lon:-72.8500, color:"#b39ddb", fc:true },
     { key:"sorel", name:"Sorel (modèle)",         lat:46.0472, lon:-73.1157, color:"#ff9d6b" }
   ],
+
+  /* ------------------------------------------------------------
+     PRÉVISIONS
+       hours         : horizon affiché par défaut (le sélecteur de la barre
+                       d'outils le remplace et le mémorise)
+       models        : modèles météo interrogés séparément chez Open-Meteo.
+                       Un modèle = une courbe = une requête, faite seulement
+                       si la case est cochée. `def:true` = actif au départ
+                       (uniquement pour les points marqués met/fc).
+                       Autres identifiants possibles : gem_global, icon_eu,
+                       arome_france, ukmo_seamless, gfs_graphcast025…
+       ensembleModel : modèle d'ensemble pour l'enveloppe d'incertitude
+                       (min/max des membres). gem_global_ensemble = ECCC.
+                       Alternatives : icon_seamless, gfs_seamless, ecmwf_ifs04.
+     ------------------------------------------------------------ */
+  forecast: {
+    hours: 48,
+    choices: [0, 24, 48, 72, 120, 240],
+    ensembleModel: "gem_global_ensemble",
+    models: [
+      { key:"best_match",            name:"Meilleur choix",        color:"#3fb6ff", def:true  },
+      { key:"gem_hrdps_continental", name:"HRDPS — ECCC 2,5 km",   color:"#37d3a2", def:true  },
+      { key:"gem_regional",          name:"RDPS — ECCC 10 km",     color:"#8fd8c5", def:false },
+      { key:"ecmwf_ifs025",          name:"IFS — ECMWF",           color:"#c792ea", def:false },
+      { key:"gfs_seamless",          name:"GFS — NOAA",            color:"#ffb454", def:false },
+      { key:"icon_seamless",         name:"ICON — DWD",            color:"#ff9d6b", def:false }
+    ]
+  },
 
   // Couches WMS GeoMet (STYLES obligatoire en WMS 1.3.0)
   overlays: [

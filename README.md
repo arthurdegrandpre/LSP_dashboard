@@ -29,7 +29,7 @@ Le fichier `.nojekyll` désactive le traitement Jekyll (inutile ici).
 | `js/config.js` | **Configuration** : stations, séries de vent, couches WMS, satellites, filtres — seul fichier à modifier pour ajouter des données |
 | `js/core.js` | Registre de modules, utilitaires réseau, préférences, **registre des séries et panneau latéral** |
 | `js/aoi.js` | Zone d'intérêt : dessin du polygone, mesure de recouvrement |
-| `js/wind.js` | Sources de vent (séries horaires, temps réel) et widget météo |
+| `js/wind.js` | Sources de vent (séries horaires, prévisions par modèle, ensemble, temps réel) et widget météo |
 | `js/satellites.js` | Passages satellites, filtres nuages et recouvrement |
 | `js/layers.js` | Carte MapLibre, couches WMS, qualité de l'eau |
 | `js/app.js` | Graphique des séries temporelles (niveaux + vent) et export |
@@ -39,7 +39,8 @@ Les fichiers sont chargés dans cet ordre par `index.html` ; tout est global, il
 ## Sources de données (toutes publiques, CORS ouverts)
 
 - Niveaux d'eau : [IWLS/SINECO (MPO)](https://api-iwls.dfo-mpo.gc.ca) et [MSC GeoMet (ECCC)](https://api.weather.gc.ca) — temps réel + archives HYDAT
-- Vent : SWOB temps réel (ECCC), archives climatiques horaires (ECCC), [Open-Meteo](https://open-meteo.com) (réanalyse + prévision, tout point du lac, sans clé)
+- Vent : SWOB temps réel (ECCC), archives climatiques horaires (ECCC), [Open-Meteo](https://open-meteo.com) — réanalyse, prévision par modèle (HRDPS, RDPS, IFS, GFS, ICON) et [API d'ensemble](https://open-meteo.com/en/docs/ensemble-api), tout point du lac, sans clé
+- Prévision de niveau : séries de prévision IWLS (`wlf-spine` — système SPINE du MPO pour le Saint-Laurent)
 - Passages satellites : [Earth Search STAC](https://earth-search.aws.element84.com/v1) (Sentinel-2, Landsat) ; Planet/SuperDoves via clé API (bouton « Connecter Planet », clé stockée en localStorage seulement)
 - Couches carte : WMS GeoMet (radar, température), tuiles © OpenStreetMap
 
@@ -58,6 +59,20 @@ La sélection se fait dans le **panneau latéral**, conçu pour un grand nombre 
 
 Le survol du graphique affiche le vent, la direction et la température à la date pointée, à partir des séries déjà chargées.
 
+## Prévisions
+
+Le sélecteur **Prévision** de la barre d'outils prolonge le graphique dans le futur (aucune, 24 h, 48 h, 72 h, 5 j, 10 j). La zone à droite du repère « prévision → » est ombrée : la frontière entre observation et prévision est toujours visible, et toutes les courbes prévues sont tiretées.
+
+**Niveaux d'eau.** Les codes listés dans `forecastCodes` (station) sont essayés dans l'ordre — `wlf-spine` (système de prévision du Saint-Laurent du MPO), puis `wlf`, puis `wlp` (prédiction astronomique). Le premier qui répond est retenu, et **le produit réellement obtenu est affiché dans la légende du panneau et dans l'export** : une courbe prévue n'est jamais anonyme.
+
+**Vent — comparaison de modèles.** Chaque modèle est une courbe indépendante, interrogée séparément chez Open-Meteo : *Meilleur choix*, **HRDPS (ECCC 2,5 km)**, RDPS (ECCC 10 km), IFS (ECMWF), GFS (NOAA), ICON (DWD). Ils s'activent case par case dans le panneau, ou tous d'un coup avec le bouton *Prév. vent*. Comparer les modèles est ici le point important : l'écart entre eux dit beaucoup plus sur la fiabilité du vent annoncé qu'une courbe unique. Les rafales prévues sont disponibles séparément.
+
+**Enveloppe d'ensemble.** L'option *Prév. ensemble* trace la bande min–max des membres du modèle d'ensemble (`gem_global_ensemble` par défaut) avec leur moyenne : la largeur de la bande se lit directement comme l'incertitude sur le vent.
+
+**Température.** La prévision de température accompagne chaque modèle de vent : survoler une date future affiche la valeur prévue dans le widget, marqué d'une étiquette *prévision* et du nom du modèle utilisé.
+
+Comme pour le reste, **seules les prévisions cochées sont téléchargées** — un modèle non affiché n'est jamais interrogé. Choisir « aucune » comme horizon désactive complètement les requêtes de prévision.
+
 ## Recherche de scènes satellites
 
 Sous la carte, **Zone de recherche satellite** définit la géométrie interrogée :
@@ -74,7 +89,7 @@ Le recouvrement est mesuré par échantillonnage de points (`CONFIG.scenes.aoiSa
 
 ## Export
 
-`Exporter CSV` / `JSON` reprennent la fenêtre temporelle affichée : niveaux d'eau (courants et années précédentes), séries de vent horaires (vitesse, direction, rafales, température), vent temps réel et scènes satellites **retenues par les filtres** (avec couverture nuageuse et recouvrement). L'export JSON joint la géométrie de la zone d'intérêt, les filtres appliqués et la liste des séries affichées.
+`Exporter CSV` / `JSON` reprennent la fenêtre temporelle affichée : niveaux d'eau (courants et années précédentes), séries de vent horaires (vitesse, direction, rafales, température), **prévisions** (niveau avec son produit d'origine, vent par modèle, ensemble avec min/max/membres), vent temps réel et scènes satellites **retenues par les filtres** (avec couverture nuageuse et recouvrement). Le type de chaque ligne distingue observation et prévision, et le champ `extra` nomme le modèle. L'export JSON joint la géométrie de la zone d'intérêt, les filtres appliqués, l'horizon de prévision et la liste des séries affichées.
 
 ## Extension
 
@@ -87,8 +102,8 @@ App.register({
 });
 ```
 
-Une station, une série de vent, une couche WMS ou une constellation s'ajoutent en modifiant uniquement `js/config.js`. Une nouvelle série de vent sans `climateId` est servie par Open-Meteo pour n'importe quelle coordonnée.
+Une station, une série de vent, une couche WMS ou une constellation s'ajoutent en modifiant uniquement `js/config.js`. Une nouvelle série de vent sans `climateId` est servie par Open-Meteo pour n'importe quelle coordonnée. Un modèle de prévision supplémentaire se déclare en ajoutant une entrée à `CONFIG.forecast.models` avec son identifiant Open-Meteo (`icon_eu`, `arome_france`, `ukmo_seamless`…) — il apparaît alors comme une courbe cochable pour chaque point de vent.
 
 ## Avertissement
 
-Données fournies à titre indicatif seulement. Les stations IWLS sont exprimées par rapport au zéro des cartes ; Lanoraie (ECCC) est en niveau géodésique (second axe du graphique). Les séries de vent sans identifiant climatique proviennent d'un modèle (réanalyse Open-Meteo) et non d'une observation.
+Données fournies à titre indicatif seulement. Les stations IWLS sont exprimées par rapport au zéro des cartes ; Lanoraie (ECCC) est en niveau géodésique (second axe du graphique). Les séries de vent sans identifiant climatique proviennent d'un modèle (réanalyse Open-Meteo) et non d'une observation. Les prévisions sont des sorties de modèles : elles ne remplacent pas les avertissements officiels d'Environnement Canada ni les avis à la navigation du MPO.

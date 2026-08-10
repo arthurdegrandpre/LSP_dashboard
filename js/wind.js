@@ -79,6 +79,22 @@ const WindData = {
     return ms;
   },
 
+  /* ---- Open-Meteo — lecture d'un bloc `hourly` ---- */
+  parseHourly(d, fromMs, toMs, seen){
+    const h = d?.hourly, pts = [];
+    if (!h?.time) return pts;
+    for (let i=0; i<h.time.length; i++){
+      const x = Date.parse(h.time[i] + (/[Zz]$/.test(h.time[i]) ? "" : "Z"));
+      if (isNaN(x) || x < fromMs || x > toMs) continue;
+      if (seen){ if (seen.has(x)) continue; seen.add(x); }
+      const speed = h.wind_speed_10m?.[i] ?? null, temp = h.temperature_2m?.[i] ?? null;
+      if (speed == null && temp == null) continue;
+      pts.push({ x, speed, dir:h.wind_direction_10m?.[i] ?? null,
+        gust:h.wind_gusts_10m?.[i] ?? null, temp });
+    }
+    return pts;
+  },
+
   /* ---- Open-Meteo — archive (ancien) + prévision (récent) ---- */
   async openMeteo(lat, lon, fromMs, toMs){
     const HOURLY = "wind_speed_10m,wind_direction_10m,wind_gusts_10m,temperature_2m";
@@ -96,20 +112,54 @@ const WindData = {
         `&start_date=${dayStr(from)}&end_date=${dayStr(toMs)}${q}`).catch(()=>null));
     }
     const seen = new Set(), pts = [];
-    for (const d of await Promise.all(jobs)){
-      const h = d?.hourly; if (!h?.time) continue;
-      for (let i=0; i<h.time.length; i++){
-        const x = Date.parse(h.time[i] + (/[Zz]$/.test(h.time[i]) ? "" : "Z"));
-        if (isNaN(x) || seen.has(x) || x < fromMs || x > toMs) continue;
-        const speed = h.wind_speed_10m?.[i] ?? null, temp = h.temperature_2m?.[i] ?? null;
-        if (speed == null && temp == null) continue;
-        seen.add(x);
-        pts.push({ x, speed, dir:h.wind_direction_10m?.[i] ?? null,
-          gust:h.wind_gusts_10m?.[i] ?? null, temp });
-      }
-    }
+    for (const d of await Promise.all(jobs))
+      pts.push(...this.parseHourly(d, fromMs, toMs, seen));
     pts.sort((a,b)=>a.x-b.x);
     return pts;
+  },
+
+  /* ---- Prévision par modèle ----------------------------------
+     Un modèle = une requête = une courbe. `best_match` laisse Open-Meteo
+     choisir le meilleur modèle disponible pour le point ; les autres clés
+     forcent un modèle précis (HRDPS, RDPS, IFS, GFS, ICON…), ce qui permet
+     de comparer les scénarios de vent côte à côte.
+     ------------------------------------------------------------ */
+  async forecast(ws, modelKey, fromMs, toMs){
+    const days = Math.min(16, Math.max(1, Math.ceil((toMs - Date.now())/864e5) + 1));
+    const url = `https://api.open-meteo.com/v1/forecast?latitude=${ws.lat}&longitude=${ws.lon}` +
+      `&hourly=wind_speed_10m,wind_direction_10m,wind_gusts_10m,temperature_2m` +
+      `&wind_speed_unit=kmh&timezone=UTC&forecast_days=${days}` +
+      (modelKey && modelKey !== "best_match" ? `&models=${modelKey}` : "");
+    const pts = this.parseHourly(await fetchJSON(url), fromMs, toMs);
+    pts.sort((a,b)=>a.x-b.x);
+    return pts;
+  },
+
+  /* ---- Enveloppe d'ensemble ----------------------------------
+     L'API ensemble renvoie un membre par clé (`wind_speed_10m_member01`…).
+     On en tire min / max / moyenne par pas horaire : la largeur de la bande
+     est une lecture directe de l'incertitude du vent prévu.
+     ------------------------------------------------------------ */
+  async ensemble(ws, fromMs, toMs){
+    const days = Math.min(16, Math.max(1, Math.ceil((toMs - Date.now())/864e5) + 1));
+    const d = await fetchJSON(`https://ensemble-api.open-meteo.com/v1/ensemble` +
+      `?latitude=${ws.lat}&longitude=${ws.lon}&hourly=wind_speed_10m` +
+      `&models=${CONFIG.forecast.ensembleModel}&wind_speed_unit=kmh&timezone=UTC&forecast_days=${days}`);
+    const h = d?.hourly;
+    if (!h?.time) return [];
+    const keys = Object.keys(h).filter(k=>/^wind_speed_10m/.test(k));
+    if (!keys.length) return [];
+    const out = [];
+    for (let i=0; i<h.time.length; i++){
+      const x = Date.parse(h.time[i] + (/[Zz]$/.test(h.time[i]) ? "" : "Z"));
+      if (isNaN(x) || x < fromMs || x > toMs) continue;
+      const vals = keys.map(k=>h[k]?.[i]).filter(v=>v != null);
+      if (!vals.length) continue;
+      out.push({ x, min:Math.min(...vals), max:Math.max(...vals),
+        mean: vals.reduce((a,b)=>a+b,0)/vals.length, n:vals.length });
+    }
+    out.sort((a,b)=>a.x-b.x);
+    return out;
   }
 };
 
@@ -184,16 +234,33 @@ const MetWidget = {
     this._raf = requestAnimationFrame(()=>this.render(x));
   },
   redraw(){ if (this._lastX != null) this.render(this._lastX); },
+
+  /* Observation si elle existe à ±2 h, sinon prévision — ce qui permet de
+     survoler une date future et de lire le vent prévu au même endroit. */
+  lookup(ws, x){
+    const L = (typeof Levels !== "undefined") ? Levels : null;
+    const obs = this.nearest(L?.windData?.[ws.key], x);
+    if (obs) return { o:obs, forecast:false };
+    const models = L?.windFc?.[ws.key] || {};
+    for (const m of CONFIG.forecast.models){
+      const p = this.nearest(models[m.key], x);
+      if (p) return { o:p, forecast:true, model:m.name };
+    }
+    return null;
+  },
+
   render(x){
     const panel = document.getElementById("met-widget");
-    const store = (typeof Levels !== "undefined" && Levels.windData) || {};
-    const list = CONFIG.windSeries.filter(ws=>store[ws.key]?.length);
+    const L = (typeof Levels !== "undefined") ? Levels : null;
+    const list = CONFIG.windSeries.filter(ws=>
+      L?.windData?.[ws.key]?.length || Object.keys(L?.windFc?.[ws.key] || {}).length);
     if (!list.length){ panel.classList.remove("open"); return; }
     panel.classList.add("open");
     const dstr = new Date(x).toLocaleString("fr-CA",{dateStyle:"medium",timeStyle:"short"});
     const cards = list.map(ws=>{
-      const o = this.nearest(store[ws.key], x);
-      if (!o) return `<div class="mw-card"><div><div class="mw-place">${ws.name}</div><div class="mw-sub">Pas de donnée à ±2 h</div></div></div>`;
+      const hit = this.lookup(ws, x);
+      if (!hit) return `<div class="mw-card"><div><div class="mw-place">${ws.name}</div><div class="mw-sub">Pas de donnée à ±2 h</div></div></div>`;
+      const { o, forecast } = hit;
       const dir = o.dir ?? 0;
       const tcol = o.temp==null?"var(--muted)":o.temp<=0?"#7ecbff":o.temp<15?"#8fd8c5":o.temp<25?"#ffd479":"#ff9d6b";
       return `
@@ -208,7 +275,7 @@ const MetWidget = {
             <circle cx="40" cy="40" r="4" fill="var(--panel)" stroke="${ws.color||"var(--accent)"}"/>
           </svg>
           <div>
-            <div class="mw-place">${ws.name}</div>
+            <div class="mw-place">${ws.name}${forecast?` <span class="mw-tag">prévision · ${hit.model}</span>`:""}</div>
             <div class="mw-temp" style="color:${tcol}">${o.temp!=null?o.temp.toFixed(1)+" °C":"–"}</div>
             <div class="mw-wind">${o.speed!=null?Math.round(o.speed)+" km/h":"vent –"}${o.gust!=null?` <small>· raf. ${Math.round(o.gust)}</small>`:""}</div>
             <div class="mw-sub">${o.dir!=null?dirName(dir)+" "+Math.round(dir)+"° · ":""}${new Date(o.x).toLocaleString("fr-CA",{month:"short",day:"numeric",hour:"2-digit",minute:"2-digit"})}</div>
@@ -216,7 +283,7 @@ const MetWidget = {
         </div>`;
     }).join("");
     panel.innerHTML = `
-      <div class="mw-head"><span>Vent et température le <b>${dstr}</b></span>
+      <div class="mw-head"><span>Vent et température le <b>${dstr}</b>${x > Date.now() ? " — prévision" : ""}</span>
         <span class="mw-pin ${this.pinned?"pinned":""}">${this.pinned?"📌 épinglé (cliquer le graphique pour libérer)":"suit le curseur — cliquer pour épingler"}</span></div>
       <div class="mw-grid">${cards}</div>`;
   }

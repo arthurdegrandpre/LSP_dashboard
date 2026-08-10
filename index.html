@@ -58,6 +58,8 @@
         <input type="date" id="date-from"> → <input type="date" id="date-to">
         <button id="apply-range">OK</button>
         <span>·</span>
+        <label>Prévision <select id="forecast-h"></select></label>
+        <span>·</span>
         <button id="reset-zoom">Réinit. zoom</button>
       </span>
     </h2>
@@ -65,7 +67,7 @@
     <div class="chart-layout">
       <div class="chart-main">
         <div id="chart-wrap"><canvas id="levels-chart"></canvas></div>
-        <div class="hint">Molette / pincer : zoom · glisser : déplacer (au-delà des bords : chargement auto) · Maj+glisser : zoom sur sélection · survol/clic : vent et température à cette date</div>
+        <div class="hint">Molette / pincer : zoom · glisser : déplacer (au-delà des bords : chargement auto) · Maj+glisser : zoom sur sélection · survol/clic : vent et température à cette date (observation ou prévision) · zone ombrée à droite du repère : prévision</div>
         <div id="met-widget"></div>
       </div>
 

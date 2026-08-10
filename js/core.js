@@ -231,7 +231,10 @@ const SeriesPanel = {
       { kind:"hist",  label:"Années préc." },
       { kind:"wind",  label:"Vent" },
       { kind:"gust",  label:"Rafales" },
-      { kind:"windhist", label:"Vent — années préc." }
+      { kind:"windhist", label:"Vent — années préc." },
+      { kind:"fclevel", label:"Prév. niveaux" },
+      { kind:"fcwind",  label:"Prév. vent" },
+      { kind:"fcens",   label:"Prév. ensemble" }
     ];
     host.innerHTML = "";
     const mk = (label, cls, fn, title)=>{

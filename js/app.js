@@ -48,7 +48,46 @@ const seriesFor = (st, fromMs, toMs, historical=false) =>
   st.type==="iwls" ? iwlsSeries(st.id, fromMs, toMs)
   : historical ? geometDaily(st.id, fromMs, toMs) : geometCombined(st.id, fromMs, toMs);
 
+/* Prévision de niveau IWLS — les codes de `forecastCodes` sont essayés dans
+   l'ordre et le premier qui répond est retenu (SPINE, puis prévision
+   générique, puis prédiction astronomique). Le code retenu est renvoyé
+   avec les points afin d'être affiché et exporté : on sait toujours de
+   quel produit vient la courbe. */
+const FORECAST_LABELS = { "wlf-spine":"SPINE (MPO)", "wlf":"prévision MPO", "wlp":"prédiction astronomique" };
+async function iwlsForecast(st, fromMs, toMs){
+  for (const code of st.forecastCodes || []){
+    const raw = await fetchJSON(`https://api-iwls.dfo-mpo.gc.ca/api/v1/stations/${st.id}/data` +
+      `?time-series-code=${code}&from=${iso(fromMs)}&to=${iso(toMs)}`).catch(()=>[]);
+    const pts = (Array.isArray(raw) ? raw : [])
+      .map(p=>({ x:new Date(p.eventDate).getTime(), y:p.value }))
+      .filter(p=>p.y != null && !isNaN(p.x))
+      .sort((a,b)=>a.x-b.x);
+    if (pts.length){ pts.code = code; pts.source = FORECAST_LABELS[code] || code; return pts; }
+  }
+  return [];
+}
+
 const YEAR_MS = 365.25*864e5;
+
+/* Zone de prévision : ombrage à droite de « maintenant » + repère vertical.
+   Rend visible d'un coup d'œil où s'arrête l'observation. */
+const ForecastZone = {
+  id: "forecastZone",
+  beforeDatasetsDraw(chart){
+    const now = Date.now(), x = chart.scales.x, a = chart.chartArea;
+    if (!x || !a || now <= x.min || now >= x.max) return;
+    const px = x.getPixelForValue(now), ctx = chart.ctx;
+    ctx.save();
+    ctx.fillStyle = "rgba(63,182,255,.055)";
+    ctx.fillRect(px, a.top, a.right - px, a.bottom - a.top);
+    ctx.strokeStyle = "rgba(63,182,255,.5)"; ctx.lineWidth = 1; ctx.setLineDash([4,4]);
+    ctx.beginPath(); ctx.moveTo(px, a.top); ctx.lineTo(px, a.bottom); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = "#3fb6ff"; ctx.font = "10px 'Segoe UI',system-ui,sans-serif";
+    ctx.fillText("prévision →", px + 6, a.top + 11);
+    ctx.restore();
+  }
+};
 
 /* ============================================================
    MODULE : graphique des séries temporelles
@@ -59,15 +98,40 @@ const Levels = {
   histData:{},   // niveaux années préc. : clé station -> { k: points }
   windData:{},   // vent courant         : clé station -> points {x,speed,dir,gust,temp}
   windHist:{},   // vent années préc.    : clé station -> { k: points }
+  lvlFc:{},      // prévision de niveau  : clé station -> points (+ .source)
+  windFc:{},     // prévision de vent    : clé station -> { modèle: points }
+  ensFc:{},      // enveloppe d'ensemble : clé station -> points {x,min,max,mean,n}
   cache:new Map(),
+  horizon: 0,    // heures de prévision affichées au-delà de maintenant
 
   setRangeHours(h){ this.to = Date.now(); this.from = this.to - h*36e5; this.cache.clear(); },
   setRange(from, to){ this.from = from; this.to = to; this.cache.clear(); },
 
+  /* Borne droite du graphique : la fenêtre d'observation s'arrête à
+     maintenant, la prévision la prolonge dans le futur. */
+  fcEnd(){ return Date.now() + this.horizon*36e5; },
+  fcActive(){ return this.horizon > 0; },
+  xMax(){ return this.fcActive() ? Math.max(this.to, this.fcEnd()) : this.to; },
+
   async init(){
     this.setRangeHours(72);
+    this.horizon = Store.get("lspForecastHours", CONFIG.forecast.hours);
     SeriesPanel.init();
     SeriesPanel.onChange = ()=>this.refresh();
+
+    const sel = document.getElementById("forecast-h");
+    if (sel){
+      sel.innerHTML = CONFIG.forecast.choices.map(h=>{
+        const lbl = h===0 ? "aucune" : h<24 ? h+" h" : h%24===0 && h>=48 ? (h/24)+" j" : h+" h";
+        return `<option value="${h}"${h===this.horizon?" selected":""}>${lbl}</option>`;
+      }).join("");
+      sel.onchange = ()=>{
+        this.horizon = +sel.value;
+        Store.set("lspForecastHours", this.horizon);
+        this.cache.clear();          // l'horizon fait partie de la requête
+        this.refresh();
+      };
+    }
 
     document.querySelectorAll(".toolbar button[data-h]").forEach(b=>{
       b.onclick = ()=>{
@@ -92,10 +156,13 @@ const Levels = {
     const onViewChange = ({chart})=>{
       const {min,max} = chart.scales.x;
       Overpass.reposition(min,max);
-      if (min < this.from || max > this.to) this.extend(min,max);
+      // comparer à xMax() et non à `to` : sinon la zone de prévision, qui est
+      // par nature au-delà de `to`, relancerait un chargement en boucle
+      if (min < this.from || max > this.xMax()) this.extend(min,max);
     };
     this.chart = new Chart(document.getElementById("levels-chart"), {
       type:"line", data:{datasets:[]},
+      plugins:[ForecastZone],
       options:{
         responsive:true, maintainAspectRatio:false, animation:false, parsing:false, normalized:true,
         interaction:{mode:"nearest", axis:"x", intersect:false},
@@ -143,12 +210,19 @@ const Levels = {
     const spanDays = (this.to-this.from)/864e5;
     const histOff = spanDays > CONFIG.histMaxDays;
     const why = `Désactivé au-delà de ${CONFIG.histMaxDays} jours (volume de données)`;
+    const fcOff = !this.fcActive();
+    const whyFc = "Choisissez un horizon de prévision dans la barre d'outils";
     SeriesPanel.reset();
 
     for (const st of CONFIG.waterStations){
       const g = "lvl:"+st.key;
       SeriesPanel.declare(`lvl:${st.key}`, { group:g, groupLabel:st.name, groupColor:st.color,
         label:"Niveau", color:st.color, kind:"level", def:true });
+      if ((st.forecastCodes||[]).length)
+        SeriesPanel.declare(`fc:lvl:${st.key}`, { group:g,
+          label:"Niveau prévu" + (this.lvlFc[st.key]?.source ? ` — ${this.lvlFc[st.key].source}` : ""),
+          color:st.color, dash:"dot", kind:"fclevel", def:true,
+          disabled:fcOff, disabledReason:whyFc });
       for (let k=1; k<=CONFIG.historyYears; k++)
         SeriesPanel.declare(`lvl:${st.key}:y${k}`, { group:g, label:`Niveau −${k} an${k>1?"s":""}`,
           color:"#5a6a84", kind:"hist", def:false, disabled:histOff, disabledReason:why });
@@ -164,6 +238,21 @@ const Levels = {
       for (let k=1; k<=CONFIG.historyYears; k++)
         SeriesPanel.declare(`wnd:${ws.key}:y${k}`, { group:g, label:`Vent −${k} an${k>1?"s":""}`,
           color:"#5a6a84", kind:"windhist", def:false, disabled:histOff, disabledReason:why });
+
+      // une courbe de prévision par modèle météo : c'est la comparaison
+      // des modèles qui donne une idée de la fiabilité du vent annoncé
+      const fcDefault = !!(ws.met || ws.fc);
+      for (const m of CONFIG.forecast.models)
+        SeriesPanel.declare(`fc:wnd:${ws.key}:${m.key}`, { group:g, label:"Prév. "+m.name,
+          color:m.color, dash:"dash", kind:"fcwind", def: m.def && fcDefault,
+          disabled:fcOff, disabledReason:whyFc });
+      SeriesPanel.declare(`fc:wnd:${ws.key}:gust`, { group:g, label:"Prév. rafales",
+        color:ws.color, dash:"dot", kind:"fcwind", def:false,
+        disabled:fcOff, disabledReason:whyFc });
+      const n = this.ensFc[ws.key]?.[0]?.n;
+      SeriesPanel.declare(`fc:ens:${ws.key}`, { group:g,
+        label:`Enveloppe d'ensemble${n?` (${n} membres)`:""}`,
+        color:ws.color, kind:"fcens", def:false, disabled:fcOff, disabledReason:whyFc });
     }
   },
 
@@ -182,8 +271,8 @@ const Levels = {
     this._extT = setTimeout(()=>{
       const span = this.to - this.from;
       let from = this.from, to = this.to;
-      if (min < this.from) from = Math.max(min - span*0.5, Date.now() - 5*YEAR_MS);
-      if (max > this.to)   to   = Math.min(max + span*0.5, Date.now());
+      if (min < this.from)  from = Math.max(min - span*0.5, Date.now() - 5*YEAR_MS);
+      if (max > this.xMax()) to  = Math.min(max + span*0.5, Date.now());
       this.setRange(from, to);
       this.refresh({min, max}); Overpass.refresh();
     }, 350);
@@ -198,17 +287,51 @@ const Levels = {
     this.buildCatalog();
     SeriesPanel.render();
     this.busy(true);
-    let levels, wind;
-    try { [levels, wind] = await Promise.all([ this.loadLevels(), this.loadWind() ]); }
+    let levels, wind, fc;
+    try { [levels, wind, fc] = await Promise.all([ this.loadLevels(), this.loadWind(), this.loadForecasts() ]); }
     finally { if (gen === this._gen) this.busy(false); }
     if (gen !== this._gen) return;          // une demande plus récente a pris le relais
     this.data = levels.data; this.histData = levels.hist;
     this.windData = wind.data; this.windHist = wind.hist;
+    this.lvlFc = fc.level; this.windFc = fc.wind; this.ensFc = fc.ens;
+    // le catalogue porte le nom du produit de prévision réellement obtenu
+    // (SPINE, prédiction…) et le nombre de membres d'ensemble : on le
+    // reconstruit une fois les données là pour étiqueter correctement
+    this.buildCatalog();
+    SeriesPanel.render();
     this.renderKpis();
     this.render(keepView);
     MetWidget.redraw();
   },
   _gen: 0,
+
+  /* ---------- prévisions ---------- */
+  async loadForecasts(){
+    const level = {}, wind = {}, ens = {};
+    if (!this.fcActive()) return { level, wind, ens };
+    const from = Date.now() - 6*36e5;       // léger recouvrement pour raccorder les courbes
+    const to = this.fcEnd();
+    const jobs = [];
+
+    for (const st of CONFIG.waterStations){
+      if (!(st.forecastCodes||[]).length || !SeriesPanel.on(`fc:lvl:${st.key}`)) continue;
+      jobs.push(this.cached(`fc:lvl:${st.key}|${to}`, ()=>iwlsForecast(st, from, to))
+        .then(pts=>{ if (pts.length) level[st.key] = pts; }).catch(()=>{}));
+    }
+    for (const ws of CONFIG.windSeries){
+      for (const m of CONFIG.forecast.models){
+        const wantGust = SeriesPanel.on(`fc:wnd:${ws.key}:gust`) && m.def;
+        if (!SeriesPanel.on(`fc:wnd:${ws.key}:${m.key}`) && !wantGust) continue;
+        jobs.push(this.cached(`fc:wnd:${ws.key}:${m.key}|${to}`, ()=>WindData.forecast(ws, m.key, from, to))
+          .then(pts=>{ if (pts.length) (wind[ws.key] ??= {})[m.key] = pts; }).catch(()=>{}));
+      }
+      if (SeriesPanel.on(`fc:ens:${ws.key}`))
+        jobs.push(this.cached(`fc:ens:${ws.key}|${to}`, ()=>WindData.ensemble(ws, from, to))
+          .then(pts=>{ if (pts.length) ens[ws.key] = pts; }).catch(()=>{}));
+    }
+    await Promise.all(jobs);
+    return { level, wind, ens };
+  },
 
   async loadLevels(){
     const stations = CONFIG.waterStations;
@@ -321,6 +444,13 @@ const Levels = {
           if (st.axis === "y2") useY2 = true;
         }
       }
+      const fc = this.lvlFc[st.key];
+      if (fc?.length && SeriesPanel.on(`fc:lvl:${st.key}`)){
+        ds.push({label:`${st.name} — prévu (${fc.source})`, data:fc, borderColor:st.color,
+          borderDash:[2,3], borderWidth:1.8, pointRadius:0, tension:.2, spanGaps:true,
+          yAxisID:st.axis, unit:"m"});
+        if (st.axis === "y2") useY2 = true;
+      }
     }
 
     for (const ws of CONFIG.windSeries){
@@ -346,13 +476,53 @@ const Levels = {
           borderColor:"rgba(90,106,132,.5)", borderWidth:1, pointRadius:0, spanGaps:true});
         useYw = true;
       }
+
+      /* enveloppe d'ensemble : tracée en premier pour rester en arrière-plan.
+         Le remplissage cible l'index du minimum, d'où la mémorisation de i. */
+      const ens = this.ensFc[ws.key];
+      if (ens?.length && SeriesPanel.on(`fc:ens:${ws.key}`)){
+        const iMin = ds.length;
+        ds.push({label:`${ws.name} — ensemble min`, unit:"km/h", yAxisID:"yw", noExport:true,
+          data:ens.map(p=>({x:p.x, y:p.min})), borderColor:"transparent",
+          borderWidth:0, pointRadius:0, spanGaps:true});
+        ds.push({label:`${ws.name} — ensemble max`, unit:"km/h", yAxisID:"yw", noExport:true,
+          data:ens.map(p=>({x:p.x, y:p.max})), borderColor:"transparent", borderWidth:0,
+          pointRadius:0, spanGaps:true, fill:{target:iMin, above:ws.color+"22", below:ws.color+"22"}});
+        ds.push({label:`${ws.name} — ensemble moyenne`, unit:"km/h", yAxisID:"yw",
+          data:ens.map(p=>({x:p.x, y:p.mean})), borderColor:ws.color+"cc",
+          borderDash:[5,3], borderWidth:1.4, pointRadius:0, spanGaps:true});
+        useYw = true;
+      }
+
+      // une courbe par modèle météo coché
+      const models = this.windFc[ws.key] || {};
+      for (const m of CONFIG.forecast.models){
+        const fp = models[m.key];
+        if (!fp?.length) continue;
+        if (SeriesPanel.on(`fc:wnd:${ws.key}:${m.key}`)){
+          ds.push({label:`${ws.name} — prév. ${m.name}`, unit:"km/h", yAxisID:"yw",
+            data:fp.filter(p=>p.speed!=null).map(p=>({x:p.x, y:p.speed})),
+            borderColor:m.color, borderDash:[6,3], borderWidth:1.5, pointRadius:0,
+            tension:.25, spanGaps:true});
+          useYw = true;
+        }
+        if (m.def && SeriesPanel.on(`fc:wnd:${ws.key}:gust`)){
+          const g = fp.filter(p=>p.gust!=null).map(p=>({x:p.x, y:p.gust}));
+          if (g.length){
+            ds.push({label:`${ws.name} — prév. rafales (${m.name})`, unit:"km/h", yAxisID:"yw",
+              data:g, borderColor:m.color, borderDash:[1,3], borderWidth:1.2,
+              pointRadius:0, spanGaps:true});
+            useYw = true;
+          }
+        }
+      }
     }
 
     this.chart.options.scales.y2.display = useY2;
     this.chart.options.scales.yw.display = useYw;
     this.chart.data.datasets = ds;
     this.chart.options.scales.x.min = keepView?.min ?? this.from;
-    this.chart.options.scales.x.max = keepView?.max ?? this.to;
+    this.chart.options.scales.x.max = keepView?.max ?? this.xMax();
     this.chart.update();
     Overpass.reposition(this.chart.options.scales.x.min, this.chart.options.scales.x.max);
   },
@@ -402,6 +572,28 @@ const Exporter = {
             value:p.speed, unit:"km/h", extra:extra(p)});
     }
 
+    // prévisions — le modèle ou le produit d'origine est toujours nommé,
+    // pour qu'une valeur prévue ne soit jamais confondue avec une observation
+    for (const st of CONFIG.waterStations){
+      const fc = Levels.lvlFc[st.key];
+      for (const p of fc||[])
+        rows.push({type:"prevision_niveau", station:st.name, datum:st.datum, time:iso(p.x),
+          value:p.y, unit:"m", extra:`source=${fc.source||""}`});
+    }
+    for (const ws of CONFIG.windSeries){
+      for (const [mk,pts] of Object.entries(Levels.windFc[ws.key]||{})){
+        const m = CONFIG.forecast.models.find(x=>x.key===mk);
+        for (const p of pts)
+          rows.push({type:"prevision_vent", station:ws.name, datum:"", time:iso(p.x),
+            value:p.speed, unit:"km/h",
+            extra:`modele=${m?.name||mk};dir=${p.dir ?? ""};rafales=${p.gust ?? ""};temp=${p.temp ?? ""}`});
+      }
+      for (const p of Levels.ensFc[ws.key]||[])
+        rows.push({type:"prevision_vent_ensemble", station:ws.name, datum:"", time:iso(p.x),
+          value:+p.mean.toFixed(1), unit:"km/h",
+          extra:`modele=${CONFIG.forecast.ensembleModel};min=${p.min};max=${p.max};membres=${p.n}`});
+    }
+
     // vent temps réel (cartes)
     for (const o of window._windData||[])
       rows.push({type:"vent_temps_reel", station:o.name, datum:"", time:iso(o.time), value:o.speed, unit:"km/h",
@@ -418,6 +610,12 @@ const Exporter = {
     return {
       exported: iso(Date.now()),
       window: { from:iso(Levels.from), to:iso(Levels.to) },
+      prevision: Levels.fcActive()
+        ? { horizon_heures: Levels.horizon, jusqu_a: iso(Levels.fcEnd()),
+            modeles_vent: CONFIG.forecast.models.filter(m=>
+              CONFIG.windSeries.some(ws=>SeriesPanel.on(`fc:wnd:${ws.key}:${m.key}`))).map(m=>m.name),
+            modele_ensemble: CONFIG.forecast.ensembleModel }
+        : null,
       series_affichees: SeriesPanel.activeIds(),
       zone_interet: { description: Aoi.label(), geometry: Aoi.geometry() },
       filtres_scenes: Overpass.filters
